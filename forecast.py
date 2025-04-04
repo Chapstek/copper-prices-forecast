@@ -15,7 +15,7 @@ except ImportError as e:
 st.markdown(
     """
     <head>
-        <meta name="google-site-verification" content="YOUR_VERIFICATION_CODE" />
+        <meta name="google-site-verification" content="googlef2a720f6c795a644" />
     </head>
     """,
     unsafe_allow_html=True
