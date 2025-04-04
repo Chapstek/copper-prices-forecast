@@ -11,26 +11,19 @@ except ImportError as e:
     st.error(f"Missing module: {e}. Please install it with 'pip install {e.name}'.")
     st.stop()
 
-    # At the top, after imports
-st.markdown(
-    """
-    <head>
-        <meta name="google-site-verification" content="googlef2a720f6c795a644.html" />
-    </head>
-    """,
-    unsafe_allow_html=True
-)
+    
 # After imports, near the top
 st.markdown(
     """
     <!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX"></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', 'G-XXXXXXXXXX');
-    </script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-9KMECFLK52"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-9KMECFLK52');
+</script>
     """,
     unsafe_allow_html=True
 )
