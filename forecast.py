@@ -1,3 +1,4 @@
+# Imports with proper error handling
 try:
     import pandas as pd
     import numpy as np
@@ -8,63 +9,69 @@ try:
     from pmdarima import auto_arima
     import streamlit as st
 except ImportError as e:
-    st.error(f"Missing module: {e}. Please install it with 'pip install {e.name}'.")
-    st.stop()
+    print(f"Missing module: {e}. Please install it with 'pip install {e.name}'.")
+    exit(1)
 
-    
-# After imports, near the top
+# Google Analytics
 st.markdown(
     """
     <!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-9KMECFLK52"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-
-  gtag('config', 'G-9KMECFLK52');
-</script>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-9KMECFLK52"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-9KMECFLK52');
+    </script>
     """,
     unsafe_allow_html=True
 )
-
 
 # Streamlit app setup
 st.title("Zambia Copper Price Forecasting Tool")
 st.write("Forecast copper prices in USD and ZMW using historical data and advanced models.")
 
-# Fetch real data
-@st.cache_data  # Cache to speed up reloads
+# Fetch real data with fallback
+@st.cache_data
 def fetch_data():
-    copper_data = yf.download('HG=F', start='2015-01-01', end='2025-04-04')
-    if copper_data.empty or ('Close', 'HG=F') not in copper_data.columns:
-        st.error("No valid data for HG=F (Copper Futures)")
-        st.stop()
-    copper = copper_data[('Close', 'HG=F')].resample('ME').mean()
-    df_copper = pd.DataFrame({'Price_USD': copper}).dropna()
+    try:
+        # Try HG=F, fallback to HGZ24 if needed
+        copper_data = yf.download('HG=F', start='2015-01-01', end='2025-04-04', progress=False)
+        if copper_data.empty or 'Close' not in copper_data.columns:
+            st.warning("No data for HG=F, trying HGZ24 (Dec 2024 contract)")
+            copper_data = yf.download('HGZ24', start='2015-01-01', end='2025-04-04', progress=False)
+            if copper_data.empty or 'Close' not in copper_data.columns:
+                st.error("No valid data for copper futures (HG=F or HGZ24)")
+                return None
+        copper = copper_data['Close'].resample('ME').mean()
+        df_copper = pd.DataFrame({'Price_USD': copper}).dropna()
 
-    zmw_data = yf.download('ZMW=X', start='2015-01-01', end='2025-04-04')
-    if zmw_data.empty or ('Close', 'ZMW=X') not in zmw_data.columns:
-        st.error("No valid data for ZMW=X (Exchange Rate)")
-        st.stop()
-    zmw = zmw_data[('Close', 'ZMW=X')].resample('ME').mean()
-    df_zmw = pd.DataFrame({'Exchange_Rate': zmw}).dropna()
+        zmw_data = yf.download('ZMW=X', start='2015-01-01', end='2025-04-04', progress=False)
+        if zmw_data.empty or 'Close' not in zmw_data.columns:
+            st.error("No valid data for ZMW=X (Exchange Rate)")
+            return None
+        zmw = zmw_data['Close'].resample('ME').mean()
+        df_zmw = pd.DataFrame({'Exchange_Rate': zmw}).dropna()
 
-    df = df_copper.join(df_zmw, how='inner')
-    if df.empty:
-        st.error("No overlapping data")
-        st.stop()
-    df['Price_USD'] *= 2204.6  # Convert to USD/ton
-    df['Price_ZMW'] = df['Price_USD'] * df['Exchange_Rate']
+        df = df_copper.join(df_zmw, how='inner')
+        if df.empty:
+            st.error("No overlapping data")
+            return None
+        df['Price_USD'] *= 2204.6  # Convert to USD/ton
+        df['Price_ZMW'] = df['Price_USD'] * df['Exchange_Rate']
 
-    # Features
-    df['Log_Price_USD'] = np.log(df['Price_USD'])
-    df['Log_Exchange_Rate'] = np.log(df['Exchange_Rate'])
-    df['USD_Volatility'] = df['Price_USD'].pct_change().rolling(window=3).std().fillna(method='bfill')
-    df['ZMW_Volatility'] = df['Exchange_Rate'].pct_change().rolling(window=3).std().fillna(method='bfill')
-    return df
+        df['Log_Price_USD'] = np.log(df['Price_USD'])
+        df['Log_Exchange_Rate'] = np.log(df['Exchange_Rate'])
+        df['USD_Volatility'] = df['Price_USD'].pct_change().rolling(window=3).std().fillna(method='bfill')
+        df['ZMW_Volatility'] = df['Exchange_Rate'].pct_change().rolling(window=3).std().fillna(method='bfill')
+        return df
+    except Exception as e:
+        st.error(f"Data fetch failed: {str(e)}")
+        return None
 
 df = fetch_data()
+if df is None:
+    st.stop()
 
 # Train-test split
 train_size = int(len(df) * 0.8)
@@ -126,9 +133,12 @@ sarima_zmw_full = np.exp(model_fit_zmw.forecast(steps=forecast_steps))
 forecast_usd = 0.5 * var_usd_full + 0.5 * sarima_usd_full
 forecast_zmw = 0.5 * var_zmw_full + 0.5 * sarima_zmw_full
 forecast_zmw_price = forecast_usd * forecast_zmw
-forecast_index = pd.date_range(start=df.index[-1], periods=forecast_steps + 1, freq='ME')[1:]
 
-# Tabs for navigation
+# Forecast index starting from April 2025
+forecast_start_date = pd.Timestamp('2025-04-30')
+forecast_index = pd.date_range(start=forecast_start_date, periods=forecast_steps, freq='ME')
+
+# Tabs
 tab1, tab2, tab3 = st.tabs(["Historical Data", "Model Evaluation", "Forecast"])
 
 with tab1:
@@ -196,3 +206,12 @@ with tab3:
     })
     st.write("Forecast Table:")
     st.dataframe(forecast_df)
+
+    # Download button
+    csv = forecast_df.to_csv(index=False)
+    st.download_button(
+        label="Download Forecast as CSV",
+        data=csv,
+        file_name='copper_price_forecast.csv',
+        mime='text/csv'
+    )
