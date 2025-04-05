@@ -7,6 +7,7 @@ try:
     import yfinance as yf
     from pmdarima import auto_arima
     import streamlit as st
+    import time
 except ImportError as e:
     print(f"Missing module: {e}. Please install it with 'pip install {e.name}'.")
     exit(1)
@@ -16,36 +17,57 @@ st.title("Zambia Copper Price Forecasting Tool")
 st.write("Forecast copper prices in USD and ZMW using historical data and advanced models.")
 
 # Fetch real data
-@st.cache_data
+@st.cache_data(ttl=3600)
 def fetch_data():
-    copper_data = yf.download('HG=F', start='2015-01-01', end='2025-04-04')
-    if copper_data.empty or ('Close', 'HG=F') not in copper_data.columns:
-        st.error("No valid data for HG=F (Copper Futures)")
-        st.stop()
-    copper = copper_data[('Close', 'HG=F')].resample('ME').mean()
-    df_copper = pd.DataFrame({'Price_USD': copper}).dropna()
+    try:
+        for attempt in range(3):
+            copper_data = yf.download('HG=F', start='2015-01-01', end='2025-03-31', progress=False)
+            if not copper_data.empty and 'Close' in copper_data.columns:
+                st.write("Using HG=F (Copper Futures) data.")
+                break
+            st.warning(f"Attempt {attempt + 1}: No data for HG=F. Retrying in 2 seconds...")
+            time.sleep(2)
+        else:
+            st.error("No valid data for HG=F (Copper Futures) after retries.")
+            st.write("Debug: copper_data:", copper_data if copper_data.empty else copper_data.tail())
+            st.warning("Switching to COPX (Copper Miners ETF) as fallback...")
+            copper_data = yf.download('COPX', start='2015-01-01', end='2025-03-31', progress=False)
+            if copper_data.empty or 'Close' not in copper_data.columns:
+                st.error("Fallback to COPX failed. No copper-related data available.")
+                return None
+            st.write("Using COPX data (note: prices reflect ETF shares, not futures tons).")
+        copper = copper_data['Close'].resample('ME').mean()
+        df_copper = pd.DataFrame({'Price_USD': copper}).dropna()
 
-    zmw_data = yf.download('ZMW=X', start='2015-01-01', end='2025-04-04')
-    if zmw_data.empty or ('Close', 'ZMW=X') not in zmw_data.columns:
-        st.error("No valid data for ZMW=X (Exchange Rate)")
-        st.stop()
-    zmw = zmw_data[('Close', 'ZMW=X')].resample('ME').mean()
-    df_zmw = pd.DataFrame({'Exchange_Rate': zmw}).dropna()
+        zmw_data = yf.download('ZMW=X', start='2015-01-01', end='2025-03-31', progress=False)
+        if zmw_data.empty or 'Close' not in zmw_data.columns:
+            st.error("No valid data for ZMW=X (Exchange Rate)")
+            st.write("Debug: zmw_data:", zmw_data if zmw_data.empty else zmw_data.tail())
+            return None
+        zmw = zmw_data['Close'].resample('ME').mean()
+        df_zmw = pd.DataFrame({'Exchange_Rate': zmw}).dropna()
 
-    df = df_copper.join(df_zmw, how='inner')
-    if df.empty:
-        st.error("No overlapping data")
-        st.stop()
-    df['Price_USD'] *= 2204.6  # Convert to USD/ton
-    df['Price_ZMW'] = df['Price_USD'] * df['Exchange_Rate']
+        df = df_copper.join(df_zmw, how='inner')
+        if df.empty:
+            st.error("No overlapping data")
+            return None
+        if 'HG=F' in copper_data.columns or copper_data.index.name == 'HG=F':
+            df['Price_USD'] *= 2204.6  # Convert lb to ton
+        df['Price_ZMW'] = df['Price_USD'] * df['Exchange_Rate']
 
-    df['Log_Price_USD'] = np.log(df['Price_USD'])
-    df['Log_Exchange_Rate'] = np.log(df['Exchange_Rate'])
-    df['USD_Volatility'] = df['Price_USD'].pct_change().rolling(window=3).std().fillna(method='bfill')
-    df['ZMW_Volatility'] = df['Exchange_Rate'].pct_change().rolling(window=3).std().fillna(method='bfill')
-    return df
+        df['Log_Price_USD'] = np.log(df['Price_USD'])
+        df['Log_Exchange_Rate'] = np.log(df['Exchange_Rate'])
+        df['USD_Volatility'] = df['Price_USD'].pct_change().rolling(window=3).std().fillna(method='bfill')
+        df['ZMW_Volatility'] = df['Exchange_Rate'].pct_change().rolling(window=3).std().fillna(method='bfill')
+        return df
+    except Exception as e:
+        st.error(f"Data fetch failed: {str(e)}")
+        return None
 
 df = fetch_data()
+if df is None:
+    st.write("Cannot proceed without data. Please try again later or contact support.")
+    st.stop()
 
 # Train-test split
 train_size = int(len(df) * 0.8)
@@ -107,7 +129,10 @@ sarima_zmw_full = np.exp(model_fit_zmw.forecast(steps=forecast_steps))
 forecast_usd = 0.5 * var_usd_full + 0.5 * sarima_usd_full
 forecast_zmw = 0.5 * var_zmw_full + 0.5 * sarima_zmw_full
 forecast_zmw_price = forecast_usd * forecast_zmw
-forecast_index = pd.date_range(start=df.index[-1], periods=forecast_steps + 1, freq='ME')[1:]
+
+# Forecast index starting from April 2025
+forecast_start_date = pd.Timestamp('2025-04-30')
+forecast_index = pd.date_range(start=forecast_start_date, periods=forecast_steps, freq='ME')
 
 # Tabs
 tab1, tab2, tab3 = st.tabs(["Historical Data", "Model Evaluation", "Forecast"])
@@ -115,16 +140,16 @@ tab1, tab2, tab3 = st.tabs(["Historical Data", "Model Evaluation", "Forecast"])
 with tab1:
     st.subheader("Historical Copper Prices")
     fig1, ax1 = plt.subplots(figsize=(10, 6))
-    ax1.plot(df.index, df['Price_USD'], label='Price (USD/ton)')
+    ax1.plot(df.index, df['Price_USD'], label='Price (USD/ton)' if 'HG=F' in copper_data.columns else 'Price (USD/share)')
     ax1.set_xlabel('Date')
-    ax1.set_ylabel('Price (USD/ton)')
+    ax1.set_ylabel('Price (USD)')
     ax1.legend()
     st.pyplot(fig1)
 
     fig2, ax2 = plt.subplots(figsize=(10, 6))
-    ax2.plot(df.index, df['Price_ZMW'], label='Price (ZMW/ton)', color='green')
+    ax2.plot(df.index, df['Price_ZMW'], label='Price (ZMW/ton)' if 'HG=F' in copper_data.columns else 'Price (ZMW/share)', color='green')
     ax2.set_xlabel('Date')
-    ax2.set_ylabel('Price (ZMW/ton)')
+    ax2.set_ylabel('Price (ZMW)')
     ax2.legend()
     st.pyplot(fig2)
 
@@ -138,7 +163,7 @@ with tab2:
     ax3.plot(test_df.index, var_usd_test, label='VAR Test (USD)', color='purple', linestyle='--')
     ax3.plot(test_df.index, sarima_usd_test, label='SARIMA Test (USD)', color='blue', linestyle='--')
     ax3.set_xlabel('Date')
-    ax3.set_ylabel('Price (USD/ton)')
+    ax3.set_ylabel('Price (USD)')
     ax3.legend()
     st.pyplot(fig3)
 
@@ -147,7 +172,7 @@ with tab2:
     ax4.plot(test_df.index, var_usd_test * test_df['Exchange_Rate'], label='VAR Test (ZMW)', color='purple', linestyle='--')
     ax4.plot(test_df.index, sarima_usd_test * test_df['Exchange_Rate'], label='SARIMA Test (ZMW)', color='blue', linestyle='--')
     ax4.set_xlabel('Date')
-    ax4.set_ylabel('Price (ZMW/ton)')
+    ax4.set_ylabel('Price (ZMW)')
     ax4.legend()
     st.pyplot(fig4)
 
@@ -157,7 +182,7 @@ with tab3:
     ax5.plot(df.index, df['Price_USD'], label='Historical (USD)')
     ax5.plot(forecast_index, forecast_usd, label='Forecast (USD)', color='red')
     ax5.set_xlabel('Date')
-    ax5.set_ylabel('Price (USD/ton)')
+    ax5.set_ylabel('Price (USD)')
     ax5.legend()
     st.pyplot(fig5)
 
@@ -165,7 +190,7 @@ with tab3:
     ax6.plot(df.index, df['Price_ZMW'], label='Historical (ZMW)', color='green')
     ax6.plot(forecast_index, forecast_zmw_price, label='Forecast (ZMW)', color='orange')
     ax6.set_xlabel('Date')
-    ax6.set_ylabel('Price (ZMW/ton)')
+    ax6.set_ylabel('Price (ZMW)')
     ax6.legend()
     st.pyplot(fig6)
 
@@ -177,3 +202,11 @@ with tab3:
     })
     st.write("Forecast Table:")
     st.dataframe(forecast_df)
+
+    csv = forecast_df.to_csv(index=False)
+    st.download_button(
+        label="Download Forecast as CSV",
+        data=csv,
+        file_name='copper_price_forecast.csv',
+        mime='text/csv'
+    )
