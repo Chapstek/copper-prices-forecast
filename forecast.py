@@ -20,18 +20,17 @@ st.write("Forecast copper prices in USD and ZMW using historical data and advanc
 @st.cache_data(ttl=3600)
 def fetch_data():
     try:
-        # Attempt HG=F
+        # Attempt HG=F with retries
         for attempt in range(3):
             copper_data = yf.download('HG=F', start='2015-01-01', end='2025-03-31', progress=False)
             if not copper_data.empty and 'Close' in copper_data.columns:
-                st.write("Using HG=F (Copper Futures) data.")
+                st.write("Using HG=F (Copper Futures) data from yfinance.")
                 break
             st.warning(f"Attempt {attempt + 1}: No data for HG=F. Retrying in 2 seconds...")
             time.sleep(2)
         else:
             st.error("No valid data for HG=F (Copper Futures) after retries.")
-            st.write("Debug: copper_data:", copper_data if copper_data.empty else copper_data.tail())
-            # Fallback to COPX
+            st.write("Debug: copper_data from yfinance:", copper_data if copper_data.empty else copper_data.tail())
             st.warning("Switching to COPX (Copper Miners ETF) as fallback...")
             copper_data = yf.download('COPX', start='2015-01-01', end='2025-03-31', progress=False)
             if copper_data.empty or 'Close' not in copper_data.columns:
@@ -40,13 +39,13 @@ def fetch_data():
                 if copper_data.empty or 'Close' not in copper_data.columns:
                     st.warning("SCCO failed. Loading static HG=F data as last resort...")
                     try:
-                        copper_data = pd.read_csv('copper_fallback.csv', index_col='Date', parse_dates=True)
+                        copper_data = pd.read_csv('copper_fallback.csv', index_col='Date', parse_dates=True, encoding='utf-8')
                         if copper_data.empty or 'Close' not in copper_data.columns:
-                            st.error("Static fallback failed. No copper-related data available.")
+                            st.error("Static fallback data in copper_fallback.csv is invalid (empty or missing 'Close' column).")
                             return None
                         st.write("Using static HG=F data from copper_fallback.csv.")
                     except FileNotFoundError:
-                        st.error("copper_fallback.csv not found in repo. No data available.")
+                        st.error("copper_fallback.csv not found in the app directory.")
                         return None
                 else:
                     st.write("Using SCCO data (note: prices reflect stock shares, not futures tons).")
@@ -56,20 +55,37 @@ def fetch_data():
         copper = copper_data['Close'].resample('ME').mean()
         df_copper = pd.DataFrame({'Price_USD': copper}).dropna()
 
-        zmw_data = yf.download('ZMW=X', start='2015-01-01', end='2025-03-31', progress=False)
-        if zmw_data.empty or 'Close' not in zmw_data.columns:
-            st.error("No valid data for ZMW=X (Exchange Rate)")
-            st.write("Debug: zmw_data:", zmw_data if zmw_data.empty else zmw_data.tail())
-            return None
+        # Attempt ZMW=X with retries
+        for attempt in range(3):
+            zmw_data = yf.download('ZMW=X', start='2015-01-01', end='2025-03-31', progress=False)
+            if not zmw_data.empty and 'Close' in zmw_data.columns:
+                st.write("Using ZMW=X (Exchange Rate) data from yfinance.")
+                break
+            st.warning(f"Attempt {attempt + 1}: No data for ZMW=X. Retrying in 2 seconds...")
+            time.sleep(2)
+        else:
+            st.error("No valid data for ZMW=X (Exchange Rate) after retries.")
+            st.write("Debug: zmw_data from yfinance:", zmw_data if zmw_data.empty else zmw_data.tail())
+            st.warning("Loading static ZMW=X data from zmw_fallback.csv...")
+            try:
+                zmw_data = pd.read_csv('zmw_fallback.csv', index_col='Date', parse_dates=True, encoding='utf-8')
+                if zmw_data.empty or 'Close' not in zmw_data.columns:
+                    st.error("Static fallback data in zmw_fallback.csv is invalid (empty or missing 'Close' column).")
+                    return None
+                st.write("Using static ZMW=X data from zmw_fallback.csv.")
+            except FileNotFoundError:
+                st.error("zmw_fallback.csv not found in the app directory.")
+                return None
+
         zmw = zmw_data['Close'].resample('ME').mean()
         df_zmw = pd.DataFrame({'Exchange_Rate': zmw}).dropna()
 
         df = df_copper.join(df_zmw, how='inner')
         if df.empty:
-            st.error("No overlapping data")
+            st.error("No overlapping data between copper prices and exchange rates.")
             return None
         if 'HG=F' in copper_data.columns or copper_data.index.name == 'HG=F':
-            df['Price_USD'] *= 2204.6  # Convert lb to ton
+            df['Price_USD'] *= 2204.6  # Convert to USD/ton (HG=F is in USD/lb)
         df['Price_ZMW'] = df['Price_USD'] * df['Exchange_Rate']
 
         df['Log_Price_USD'] = np.log(df['Price_USD'])
@@ -159,16 +175,16 @@ tab1, tab2, tab3 = st.tabs(["Historical Data", "Model Evaluation", "Forecast"])
 with tab1:
     st.subheader("Historical Copper Prices")
     fig1, ax1 = plt.subplots(figsize=(10, 6))
-    ax1.plot(df.index, df['Price_USD'], label='Price (USD/ton)' if 'HG=F' in copper_data.columns else 'Price (USD/share)')
+    ax1.plot(df.index, df['Price_USD'], label='Price (USD/ton)')
     ax1.set_xlabel('Date')
-    ax1.set_ylabel('Price (USD)')
+    ax1.set_ylabel('Price (USD/ton)')
     ax1.legend()
     st.pyplot(fig1)
 
     fig2, ax2 = plt.subplots(figsize=(10, 6))
-    ax2.plot(df.index, df['Price_ZMW'], label='Price (ZMW/ton)' if 'HG=F' in copper_data.columns else 'Price (ZMW/share)', color='green')
+    ax2.plot(df.index, df['Price_ZMW'], label='Price (ZMW/ton)', color='green')
     ax2.set_xlabel('Date')
-    ax2.set_ylabel('Price (ZMW)')
+    ax2.set_ylabel('Price (ZMW/ton)')
     ax2.legend()
     st.pyplot(fig2)
 
@@ -182,7 +198,7 @@ with tab2:
     ax3.plot(test_df.index, var_usd_test, label='VAR Test (USD)', color='purple', linestyle='--')
     ax3.plot(test_df.index, sarima_usd_test, label='SARIMA Test (USD)', color='blue', linestyle='--')
     ax3.set_xlabel('Date')
-    ax3.set_ylabel('Price (USD)')
+    ax3.set_ylabel('Price (USD/ton)')
     ax3.legend()
     st.pyplot(fig3)
 
@@ -191,7 +207,7 @@ with tab2:
     ax4.plot(test_df.index, var_usd_test * test_df['Exchange_Rate'], label='VAR Test (ZMW)', color='purple', linestyle='--')
     ax4.plot(test_df.index, sarima_usd_test * test_df['Exchange_Rate'], label='SARIMA Test (ZMW)', color='blue', linestyle='--')
     ax4.set_xlabel('Date')
-    ax4.set_ylabel('Price (ZMW)')
+    ax4.set_ylabel('Price (ZMW/ton)')
     ax4.legend()
     st.pyplot(fig4)
 
@@ -201,7 +217,7 @@ with tab3:
     ax5.plot(df.index, df['Price_USD'], label='Historical (USD)')
     ax5.plot(forecast_index, forecast_usd, label='Forecast (USD)', color='red')
     ax5.set_xlabel('Date')
-    ax5.set_ylabel('Price (USD)')
+    ax5.set_ylabel('Price (USD/ton)')
     ax5.legend()
     st.pyplot(fig5)
 
@@ -209,7 +225,7 @@ with tab3:
     ax6.plot(df.index, df['Price_ZMW'], label='Historical (ZMW)', color='green')
     ax6.plot(forecast_index, forecast_zmw_price, label='Forecast (ZMW)', color='orange')
     ax6.set_xlabel('Date')
-    ax6.set_ylabel('Price (ZMW)')
+    ax6.set_ylabel('Price (ZMW/ton)')
     ax6.legend()
     st.pyplot(fig6)
 
