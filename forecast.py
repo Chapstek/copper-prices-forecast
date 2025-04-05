@@ -90,8 +90,8 @@ def fetch_data():
 
         df['Log_Price_USD'] = np.log(df['Price_USD'])
         df['Log_Exchange_Rate'] = np.log(df['Exchange_Rate'])
-        df['USD_Volatility'] = df['Price_USD'].pct_change().rolling(window=3).std().fillna(method='bfill')
-        df['ZMW_Volatility'] = df['Exchange_Rate'].pct_change().rolling(window=3).std().fillna(method='bfill')
+        df['USD_Volatility'] = df['Price_USD'].pct_change().rolling(window=3).std().bfill()
+        df['ZMW_Volatility'] = df['Exchange_Rate'].pct_change().rolling(window=3).std().bfill()
         st.write("Debug: Data fetched successfully. df shape:", df.shape)
         st.write("Debug: df head:", df.head())
         return df
@@ -115,11 +115,12 @@ forecast_steps = st.sidebar.slider("Forecast Horizon (Months)", min_value=6, max
 # SARIMA models
 @st.cache_resource
 def train_sarima():
-    model_auto_usd = auto_arima(train_df['Log_Price_USD'], seasonal=True, m=12, stepwise=True, maxiter=100)
+    # Limit seasonal differencing to avoid over-differencing
+    model_auto_usd = auto_arima(train_df['Log_Price_USD'], seasonal=True, m=12, max_D=1, max_d=2, stepwise=True, maxiter=50)
     model_usd = ARIMA(train_df['Log_Price_USD'], order=model_auto_usd.order, seasonal_order=model_auto_usd.seasonal_order)
     model_fit_usd = model_usd.fit()
 
-    model_auto_zmw = auto_arima(train_df['Log_Exchange_Rate'], seasonal=True, m=12, stepwise=True, maxiter=100)
+    model_auto_zmw = auto_arima(train_df['Log_Exchange_Rate'], seasonal=True, m=12, max_D=1, max_d=2, stepwise=True, maxiter=50)
     model_zmw = ARIMA(train_df['Log_Exchange_Rate'], order=model_auto_zmw.order, seasonal_order=model_auto_zmw.seasonal_order)
     model_fit_zmw = model_zmw.fit()
     return model_fit_usd, model_fit_zmw
