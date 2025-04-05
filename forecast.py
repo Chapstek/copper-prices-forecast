@@ -20,6 +20,7 @@ st.write("Forecast copper prices in USD and ZMW using historical data and advanc
 @st.cache_data(ttl=3600)
 def fetch_data():
     try:
+        # Attempt HG=F
         for attempt in range(3):
             copper_data = yf.download('HG=F', start='2015-01-01', end='2025-03-31', progress=False)
             if not copper_data.empty and 'Close' in copper_data.columns:
@@ -30,12 +31,28 @@ def fetch_data():
         else:
             st.error("No valid data for HG=F (Copper Futures) after retries.")
             st.write("Debug: copper_data:", copper_data if copper_data.empty else copper_data.tail())
+            # Fallback to COPX
             st.warning("Switching to COPX (Copper Miners ETF) as fallback...")
             copper_data = yf.download('COPX', start='2015-01-01', end='2025-03-31', progress=False)
             if copper_data.empty or 'Close' not in copper_data.columns:
-                st.error("Fallback to COPX failed. No copper-related data available.")
-                return None
-            st.write("Using COPX data (note: prices reflect ETF shares, not futures tons).")
+                st.warning("COPX failed. Trying SCCO (Southern Copper Corp)...")
+                copper_data = yf.download('SCCO', start='2015-01-01', end='2025-03-31', progress=False)
+                if copper_data.empty or 'Close' not in copper_data.columns:
+                    st.warning("SCCO failed. Loading static HG=F data as last resort...")
+                    try:
+                        copper_data = pd.read_csv('copper_fallback.csv', index_col='Date', parse_dates=True)
+                        if copper_data.empty or 'Close' not in copper_data.columns:
+                            st.error("Static fallback failed. No copper-related data available.")
+                            return None
+                        st.write("Using static HG=F data from copper_fallback.csv.")
+                    except FileNotFoundError:
+                        st.error("copper_fallback.csv not found in repo. No data available.")
+                        return None
+                else:
+                    st.write("Using SCCO data (note: prices reflect stock shares, not futures tons).")
+            else:
+                st.write("Using COPX data (note: prices reflect ETF shares, not futures tons).")
+
         copper = copper_data['Close'].resample('ME').mean()
         df_copper = pd.DataFrame({'Price_USD': copper}).dropna()
 
@@ -59,6 +76,8 @@ def fetch_data():
         df['Log_Exchange_Rate'] = np.log(df['Exchange_Rate'])
         df['USD_Volatility'] = df['Price_USD'].pct_change().rolling(window=3).std().fillna(method='bfill')
         df['ZMW_Volatility'] = df['Exchange_Rate'].pct_change().rolling(window=3).std().fillna(method='bfill')
+        st.write("Debug: Data fetched successfully. df shape:", df.shape)
+        st.write("Debug: df head:", df.head())
         return df
     except Exception as e:
         st.error(f"Data fetch failed: {str(e)}")
