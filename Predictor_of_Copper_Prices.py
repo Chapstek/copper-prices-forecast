@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # Streamlit app title
-st.title("Copper Price Forecasting Tool")
+st.title("Zambia Copper Price Forecasting Tool")
 
 # File upload section
 st.header("Upload Excel Files")
